@@ -187,6 +187,20 @@ public class IdentityOathEventListener extends AbstractIdentityUserOperationEven
     }
 
     @Override
+    public boolean doPostUpdateInternalRoleListOfUser(String userName, String[] deletedInternalRoles,
+                                                      String[] newInternalRoles, UserStoreManager userStoreManager)
+            throws UserStoreException {
+
+        if (!isEnable()) {
+            return true;
+        }
+        if (ArrayUtils.isNotEmpty(deletedInternalRoles)) {
+            OAuthUtil.revokeTokens(userName, userStoreManager);
+        }
+        return OAuthUtil.removeUserClaimsFromCache(userName, userStoreManager);
+    }
+
+    @Override
     public boolean doPreUpdateUserListOfRole(String roleName, String[] deletedUsers, String[] newUsers,
                                              UserStoreManager userStoreManager) throws UserStoreException {
 
@@ -206,6 +220,19 @@ public class IdentityOathEventListener extends AbstractIdentityUserOperationEven
     @Override
     public boolean doPostUpdateUserListOfRole(String roleName, String[] deletedUsers, String[] newUsers,
                                               UserStoreManager userStoreManager) throws UserStoreException {
+
+        return postUpdateUserListOfRole(deletedUsers, newUsers, userStoreManager);
+    }
+
+    @Override
+    public boolean doPostUpdateUserListOfInternalRole(String roleName, String[] deletedUsers, String[] newUsers,
+                                                      UserStoreManager userStoreManager) throws UserStoreException {
+
+        return postUpdateUserListOfRole(deletedUsers, newUsers, userStoreManager);
+    }
+
+    private boolean postUpdateUserListOfRole(String[] deletedUsers, String[] newUsers,
+                                             UserStoreManager userStoreManager) throws UserStoreException {
 
         if (!isEnable()) {
             return true;

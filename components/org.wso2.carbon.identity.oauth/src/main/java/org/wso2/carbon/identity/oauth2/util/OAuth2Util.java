@@ -47,7 +47,6 @@ import com.nimbusds.jwt.JWTParser;
 import com.nimbusds.jwt.SignedJWT;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import org.apache.axiom.om.OMElement;
-import org.apache.axiom.om.impl.builder.StAXOMBuilder;
 import org.apache.axiom.util.base64.Base64Utils;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.codec.digest.DigestUtils;
@@ -64,7 +63,9 @@ import org.json.JSONObject;
 import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.core.util.KeyStoreManager;
 import org.wso2.carbon.identity.application.authentication.framework.exception.UserIdNotFoundException;
+import org.wso2.carbon.identity.application.authentication.framework.exception.UserSessionException;
 import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatedUser;
+import org.wso2.carbon.identity.application.authentication.framework.store.UserSessionStore;
 import org.wso2.carbon.identity.application.authentication.framework.util.FrameworkConstants;
 import org.wso2.carbon.identity.application.authentication.framework.util.FrameworkUtils;
 import org.wso2.carbon.identity.application.common.IdentityApplicationManagementException;
@@ -77,11 +78,11 @@ import org.wso2.carbon.identity.application.common.util.IdentityApplicationManag
 import org.wso2.carbon.identity.application.mgt.ApplicationManagementService;
 import org.wso2.carbon.identity.base.IdentityConstants;
 import org.wso2.carbon.identity.base.IdentityException;
+import org.wso2.carbon.identity.central.log.mgt.utils.LoggerUtils;
 import org.wso2.carbon.identity.core.ServiceURLBuilder;
 import org.wso2.carbon.identity.core.URLBuilderException;
 import org.wso2.carbon.identity.core.util.IdentityConfigParser;
 import org.wso2.carbon.identity.core.util.IdentityCoreConstants;
-import org.wso2.carbon.identity.core.util.IdentityIOStreamUtils;
 import org.wso2.carbon.identity.core.util.IdentityTenantUtil;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.oauth.IdentityOAuthAdminException;
@@ -101,6 +102,7 @@ import org.wso2.carbon.identity.oauth.internal.OAuthComponentServiceHolder;
 import org.wso2.carbon.identity.oauth.tokenprocessor.PlainTextPersistenceProcessor;
 import org.wso2.carbon.identity.oauth.tokenprocessor.TokenPersistenceProcessor;
 import org.wso2.carbon.identity.oauth.user.UserInfoEndpointException;
+import org.wso2.carbon.identity.oauth2.IdentityOAuth2ClientException;
 import org.wso2.carbon.identity.oauth2.IdentityOAuth2Exception;
 import org.wso2.carbon.identity.oauth2.IdentityOAuth2ScopeException;
 import org.wso2.carbon.identity.oauth2.IdentityOAuth2ScopeServerException;
@@ -137,21 +139,15 @@ import org.wso2.carbon.user.core.UserStoreManager;
 import org.wso2.carbon.user.core.common.AbstractUserStoreManager;
 import org.wso2.carbon.user.core.service.RealmService;
 import org.wso2.carbon.user.core.util.UserCoreUtil;
-import org.wso2.carbon.utils.CarbonUtils;
 import org.wso2.carbon.utils.multitenancy.MultitenantConstants;
 import org.wso2.carbon.utils.multitenancy.MultitenantUtils;
 
 import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Paths;
 import java.security.Key;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
@@ -184,9 +180,6 @@ import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.xml.namespace.QName;
-import javax.xml.stream.XMLInputFactory;
-import javax.xml.stream.XMLStreamException;
-import javax.xml.stream.XMLStreamReader;
 
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OAuth10AEndpoints.OAUTH_AUTHZ_EP_URL;
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OAuth10AEndpoints.OAUTH_REQUEST_TOKEN_EP_URL;
@@ -307,12 +300,8 @@ public class OAuth2Util {
     public static final String APPLICATION_ACCESS_TOKEN_EXP_TIME_IN_MILLISECONDS = "applicationAccessTokenExpireTime";
 
     private static final Log log = LogFactory.getLog(OAuth2Util.class);
+    private static final Log diagnosticLog = LogFactory.getLog("diagnostics");
     private static final String INTERNAL_LOGIN_SCOPE = "internal_login";
-    private static final String IDENTITY_PATH = "identity";
-    public static final String NAME = "name";
-    private static final String DISPLAY_NAME = "displayName";
-    private static final String DESCRIPTION = "description";
-    private static final String PERMISSION = "Permission";
     public static final String JWT = "JWT";
     private static long timestampSkew = OAuthServerConfiguration.getInstance().getTimeStampSkewInSeconds() * 1000;
     private static ThreadLocal<Integer> clientTenantId = new ThreadLocal<>();
@@ -352,6 +341,9 @@ public class OAuth2Util {
     private static final String QUERY_RESPONSE_MODE = "query";
     private static final String FRAGMENT_RESPONSE_MODE = "fragment";
     private static final String FORM_POST_RESPONSE_MODE = "form_post";
+
+    public static final String ACCESS_TOKEN_IS_NOT_ACTIVE_ERROR_MESSAGE = "Invalid Access Token. Access token is " +
+            "not ACTIVE.";
 
     private OAuth2Util() {
 
@@ -664,7 +656,9 @@ public class OAuth2Util {
         try {
             return clientId + ":" + authenticatedUser.getUserId() + ":" + scope;
         } catch (UserIdNotFoundException e) {
-            log.error("Cache could not be built for user: " + authorizedUser, e);
+            if (log.isDebugEnabled()) {
+                log.debug("Cache could not be built for user: " + authorizedUser, e);
+            }
         }
         return null;
     }
@@ -730,7 +724,12 @@ public class OAuth2Util {
     public static String buildCacheKeyStringForTokenWithUserId(String clientId, String scope, String authorizedUserId,
                                                      String authenticatedIDP, String tokenBindingReference) {
 
-        return clientId + ":" + authorizedUserId + ":" + scope + ":" + authenticatedIDP + ":" + tokenBindingReference;
+        String oauthCacheKey =
+                clientId + ":" + authorizedUserId + ":" + scope + ":" + authenticatedIDP + ":" + tokenBindingReference;
+        if (log.isDebugEnabled()) {
+            log.debug(String.format("Building cache key: %s to access OAuthCache.", oauthCacheKey));
+        }
+        return oauthCacheKey;
     }
 
     /**
@@ -1536,6 +1535,14 @@ public class OAuth2Util {
                                        OAuthAppDO oAuthApp) throws IdentityOAuth2Exception {
 
         if (oAuthApp != null && oAuthApp.isPkceMandatory() || referenceCodeChallenge != null) {
+            Map<String, Object> params = null;
+            if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                params = new HashMap<>();
+                params.put("clientId", oAuthApp.getOauthConsumerKey());
+                params.put("verificationCode", verificationCode);
+                params.put("codeChallenge", referenceCodeChallenge);
+                params.put("challengeMethod", challengeMethod);
+            }
 
             //As per RFC 7636 Fallback to 'plain' if no code_challenge_method parameter is sent
             if (challengeMethod == null || challengeMethod.trim().length() == 0) {
@@ -1546,14 +1553,32 @@ public class OAuth2Util {
             if ((verificationCode == null || verificationCode.trim().length() == 0)) {
                 //if pkce is mandatory, throw error
                 if (oAuthApp.isPkceMandatory()) {
+                    if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                        LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE, params,
+                                OAuthConstants.LogConstants.FAILED,
+                                "No PKCE code verifier found. PKCE is mandatory for the application.", "validate-pkce",
+                                null);
+                    }
                     throw new IdentityOAuth2Exception("No PKCE code verifier found.PKCE is mandatory for this " +
                             "oAuth 2.0 application.");
                 } else {
                     //PKCE is optional, see if the authz code was requested with a PKCE challenge
                     if (referenceCodeChallenge == null || referenceCodeChallenge.trim().length() == 0) {
                         //since no PKCE challenge was provided
+                        if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                            LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE,
+                                    params, OAuthConstants.LogConstants.SUCCESS, "PKCE challenge is not provided.",
+                                    "validate-pkce", null);
+                        }
                         return true;
                     } else {
+                        if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                            LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE,
+                                    params, OAuthConstants.LogConstants.FAILED,
+                                    "Empty PKCE code_verifier sent. This authorization code requires a PKCE " +
+                                            "verification to obtain an access token.",
+                                    "validate-pkce", null);
+                        }
                         throw new IdentityOAuth2Exception("Empty PKCE code_verifier sent. This authorization code " +
                                 "requires a PKCE verification to obtain an access token.");
                     }
@@ -1561,15 +1586,32 @@ public class OAuth2Util {
             }
             //verify that the code verifier is upto spec as per RFC 7636
             if (!validatePKCECodeVerifier(verificationCode)) {
+                if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                    LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE, params,
+                            OAuthConstants.LogConstants.FAILED,
+                            "Code verifier used is not up to RFC 7636 specifications.", "validate-pkce", null);
+                }
                 throw new IdentityOAuth2Exception("Code verifier used is not up to RFC 7636 specifications.");
             }
             if (OAuthConstants.OAUTH_PKCE_PLAIN_CHALLENGE.equals(challengeMethod)) {
                 //if the current application explicitly doesn't support plain, throw exception
                 if (!oAuthApp.isPkceSupportPlain()) {
+                    if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                        LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE, params,
+                                OAuthConstants.LogConstants.FAILED,
+                                "This application does not allow 'plain' transformation algorithm.", "validate-pkce",
+                                null);
+                    }
                     throw new IdentityOAuth2Exception(
                             "This application does not allow 'plain' transformation algorithm.");
                 }
                 if (!referenceCodeChallenge.equals(verificationCode)) {
+                    if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                        LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE, params,
+                                OAuthConstants.LogConstants.FAILED,
+                                "Reference code challenge does not match with verification code.", "validate-pkce",
+                                null);
+                    }
                     return false;
                 }
             } else if (OAuthConstants.OAUTH_PKCE_S256_CHALLENGE.equals(challengeMethod)) {
@@ -1582,21 +1624,39 @@ public class OAuth2Util {
                     String referencePKCECodeChallenge = new String(Base64.encodeBase64URLSafe(hash),
                             StandardCharsets.UTF_8).trim();
                     if (!referencePKCECodeChallenge.equals(referenceCodeChallenge)) {
+                        if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                            LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE,
+                                    params, OAuthConstants.LogConstants.FAILED,
+                                    "Reference code challenge does not match with verification code.", "validate-pkce",
+                                    null);
+                        }
                         return false;
                     }
                 } catch (NoSuchAlgorithmException e) {
                     if (log.isDebugEnabled()) {
                         log.debug("Failed to create SHA256 Message Digest.");
                     }
+                    if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                        LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE, params,
+                                OAuthConstants.LogConstants.FAILED, "System error occurred.", "validate-pkce", null);
+                    }
                     return false;
                 }
             } else {
                 //Invalid OAuth2 token response
+                if (LoggerUtils.isDiagnosticLogsEnabled()) {
+                    LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE, params,
+                            OAuthConstants.LogConstants.FAILED, "Invalid PKCE Code Challenge Method.", "validate-pkce",
+                            null);
+                }
                 throw new IdentityOAuth2Exception("Invalid OAuth2 Token Response. Invalid PKCE Code Challenge Method '"
                         + challengeMethod + "'");
             }
         }
         //pkce validation successful
+        LoggerUtils.triggerDiagnosticLogEvent(OAuthConstants.LogConstants.OAUTH_INBOUND_SERVICE, null,
+                OAuthConstants.LogConstants.SUCCESS, "PKCE validation is successful for the token request.",
+                "validate-pkce", null);
         return true;
     }
 
@@ -1638,10 +1698,14 @@ public class OAuth2Util {
      */
     public static void initiateOIDCScopes(int tenantId) {
 
-        List<ScopeDTO> scopeClaimsList = loadScopeConfigFile();
+        List<ScopeDTO> scopeClaimsList = OAuth2ServiceComponentHolder.getInstance().getOIDCScopesClaims();
         try {
-            OAuthTokenPersistenceFactory.getInstance().getScopeClaimMappingDAO().addScopes(tenantId,
+            OAuthTokenPersistenceFactory.getInstance().getScopeClaimMappingDAO().initScopeClaimMapping(tenantId,
                     scopeClaimsList);
+        } catch (IdentityOAuth2ClientException e) {
+            if (log.isDebugEnabled()) {
+                log.debug(e.getMessage(), e);
+            }
         } catch (IdentityOAuth2Exception e) {
             log.error(e.getMessage(), e);
         }
@@ -1693,8 +1757,12 @@ public class OAuth2Util {
         if (result != null && result instanceof AccessTokenDO) {
             accessTokenDO = (AccessTokenDO) result;
             cacheHit = true;
-            if (log.isDebugEnabled()) {
+            if (log.isDebugEnabled() && IdentityUtil.isTokenLoggable(IdentityConstants.IdentityTokens.ACCESS_TOKEN)) {
                 log.debug("Hit OAuthCache for accessTokenIdentifier: " + accessTokenIdentifier);
+            } else {
+                if (log.isDebugEnabled()) {
+                    log.debug("Hit OAuthCache with accessTokenIdentifier");
+                }
             }
         }
 
@@ -1702,11 +1770,16 @@ public class OAuth2Util {
         if (accessTokenDO == null) {
             accessTokenDO = OAuthTokenPersistenceFactory.getInstance().getAccessTokenDAO()
                     .getAccessToken(accessTokenIdentifier, includeExpired);
+        } else {
+            if (log.isDebugEnabled()) {
+                log.debug("Retrieved active access token from OAuthCache for token Identifier: " +
+                        accessTokenDO.getTokenId());
+            }
         }
 
         if (accessTokenDO == null) {
             // this means the token is not active so we can't proceed further
-            throw new IllegalArgumentException("Invalid Access Token. Access token is not ACTIVE.");
+            throw new IllegalArgumentException(ACCESS_TOKEN_IS_NOT_ACTIVE_ERROR_MESSAGE);
         }
 
         // Add the token back to the cache in the case of a cache miss but don't add to cache when OAuth2 token
@@ -1983,91 +2056,6 @@ public class OAuth2Util {
         return oauthIdentityTokenGenerator;
     }
 
-    private static List<ScopeDTO> loadScopeConfigFile() {
-
-        List<ScopeDTO> listOIDCScopesClaims = new ArrayList<>();
-        String configDirPath = CarbonUtils.getCarbonConfigDirPath();
-        String confXml =
-                Paths.get(configDirPath, "identity", OAuthConstants.OIDC_SCOPE_CONFIG_PATH)
-                        .toString();
-        File configfile = new File(confXml);
-        if (!configfile.exists()) {
-            log.warn("OIDC scope-claim Configuration File is not present at: " + confXml);
-        }
-
-        XMLStreamReader parser = null;
-        InputStream stream = null;
-
-        try {
-            stream = new FileInputStream(configfile);
-            parser = XMLInputFactory.newInstance()
-                    .createXMLStreamReader(stream);
-            StAXOMBuilder builder = new StAXOMBuilder(parser);
-            OMElement documentElement = builder.getDocumentElement();
-            Iterator iterator = documentElement.getChildElements();
-            while (iterator.hasNext()) {
-                ScopeDTO scope = new ScopeDTO();
-                OMElement omElement = (OMElement) iterator.next();
-                String configType = omElement.getAttributeValue(new QName("id"));
-                scope.setName(configType);
-
-                String displayName = omElement.getAttributeValue(new QName("displayName"));
-                if (StringUtils.isNotEmpty(displayName)) {
-                    scope.setDisplayName(displayName);
-                } else {
-                    scope.setDisplayName(configType);
-                }
-
-                String description = omElement.getAttributeValue(new QName("description"));
-                if (StringUtils.isNotEmpty(description)) {
-                    scope.setDescription(description);
-                }
-
-                scope.setClaim(loadClaimConfig(omElement));
-                listOIDCScopesClaims.add(scope);
-            }
-        } catch (XMLStreamException e) {
-            log.warn("Error while loading scope config.", e);
-        } catch (FileNotFoundException e) {
-            log.warn("Error while loading email config.", e);
-        } finally {
-            try {
-                if (parser != null) {
-                    parser.close();
-                }
-                if (stream != null) {
-                    IdentityIOStreamUtils.closeInputStream(stream);
-                }
-            } catch (XMLStreamException e) {
-                log.error("Error while closing XML stream", e);
-            }
-        }
-        return listOIDCScopesClaims;
-    }
-
-    private static String[] loadClaimConfig(OMElement configElement) {
-
-        StringBuilder claimConfig = new StringBuilder();
-        Iterator it = configElement.getChildElements();
-        while (it.hasNext()) {
-            OMElement element = (OMElement) it.next();
-            if ("Claim".equals(element.getLocalName())) {
-                String commaSeparatedClaimNames = element.getText();
-                if (StringUtils.isNotBlank(commaSeparatedClaimNames)) {
-                    claimConfig.append(commaSeparatedClaimNames.trim());
-                }
-            }
-        }
-
-        String[] claim;
-        if (claimConfig.length() > 0) {
-            claim = claimConfig.toString().split(",");
-        } else {
-            claim = new String[0];
-        }
-        return claim;
-    }
-
     /**
      * Get Oauth application information
      *
@@ -2329,7 +2317,9 @@ public class OAuth2Util {
 
             return signedJWT.verify(verifier);
         } catch (JOSEException | ParseException e) {
-            log.error("Error occurred while validating id token signature.");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while validating id token signature.");
+            }
             return false;
         } catch (Exception e) {
             log.error("Error occurred while validating id token signature.");
@@ -3294,7 +3284,7 @@ public class OAuth2Util {
             throw new IdentityOAuth2Exception("Error while obtaining the service provider for client_id: " +
                     clientId + " of tenantDomain: " + tenantDomain, e);
         } catch (InvalidOAuthClientException e) {
-            throw new IdentityOAuth2Exception("Could not find an existing app for clientId: " + clientId, e);
+            throw new IdentityOAuth2ClientException("Could not find an existing app for clientId: " + clientId, e);
         }
     }
 
@@ -3640,6 +3630,7 @@ public class OAuth2Util {
             } else {
                 authenticatedUser.setFederatedIdPName(OAuth2Util.getFederatedIdPFromDomain(userStoreDomain));
             }
+            authenticatedUser.setUserId(getUserIdOfFederatedUser(username, tenantDomain, idpName));
             if (log.isDebugEnabled()) {
                 log.debug("Federated prefix found in domain: " + userStoreDomain + " for user: " + username +
                         " in tenant domain: " + tenantDomain + ". Flag user as a federated user. " +
@@ -3651,6 +3642,28 @@ public class OAuth2Util {
         }
 
         return authenticatedUser;
+    }
+
+    /**
+     * Get the user if of the federated user from the user session store.
+     *
+     * @param username     Username.
+     * @param tenantDomain Tenant domain.
+     * @param idpName      IDP name.
+     * @return User id associated with the given federated user.
+     */
+    private static String getUserIdOfFederatedUser(String username, String tenantDomain, String idpName) {
+
+        String userId = null;
+        int tenantId = IdentityTenantUtil.getTenantId(tenantDomain);
+        try {
+            int idpId = UserSessionStore.getInstance().getIdPId(idpName, tenantId);
+            userId = UserSessionStore.getInstance().getFederatedUserId(username, tenantId, idpId);
+        } catch (UserSessionException e) {
+            // In here we better not log the user id.
+            log.error("Error occurred while resolving the user id from the username for the federated user", e);
+        }
+        return userId;
     }
 
     public static String getIdTokenIssuer(String tenantDomain) throws IdentityOAuth2Exception {
@@ -4028,10 +4041,17 @@ public class OAuth2Util {
      */
     public static void initiateOAuthScopePermissionsBindings(int tenantId) {
 
+        if (Oauth2ScopeUtils.isSystemLevelInternalSystemScopeManagementEnabled()) {
+            if (log.isDebugEnabled()) {
+                log.debug("OAuth internal scopes permission binding initialization is skipped as the scopes " +
+                        "are managed globally.");
+            }
+            return;
+        }
         try {
             //Check login scope is available. If exists, assumes all scopes are loaded using the file.
             if (!hasScopesAlreadyAdded(tenantId)) {
-                List<Scope> scopes = loadOauthScopeBinding();
+                List<Scope> scopes = OAuth2ServiceComponentHolder.getInstance().getOauthScopeBinding();
                 for (Scope scope : scopes) {
                     OAuthTokenPersistenceFactory.getInstance().getOAuthScopeDAO().addScope(scope, tenantId);
                 }
@@ -4065,80 +4085,6 @@ public class OAuth2Util {
         return false;
     }
 
-    private static List<Scope> loadOauthScopeBinding() {
-
-        List<Scope> scopes = new ArrayList<>();
-        String configDirPath = CarbonUtils.getCarbonConfigDirPath();
-        String confXml = Paths.get(configDirPath, IDENTITY_PATH, OAuthConstants.OAUTH_SCOPE_BINDING_PATH)
-                .toString();
-        File configFile = new File(confXml);
-        if (!configFile.exists()) {
-            log.warn("OAuth scope binding File is not present at: " + confXml);
-            return new ArrayList<>();
-        }
-
-        XMLStreamReader parser = null;
-        InputStream stream = null;
-
-        try {
-            stream = new FileInputStream(configFile);
-            parser = XMLInputFactory.newInstance()
-                    .createXMLStreamReader(stream);
-            StAXOMBuilder builder = new StAXOMBuilder(parser);
-            OMElement documentElement = builder.getDocumentElement();
-            Iterator iterator = documentElement.getChildElements();
-            while (iterator.hasNext()) {
-                OMElement omElement = (OMElement) iterator.next();
-                String scopeName = omElement.getAttributeValue(new QName(
-                        NAME));
-                String displayName = omElement.getAttributeValue(new QName(
-                        DISPLAY_NAME));
-                String description = omElement.getAttributeValue(new QName(
-                        DESCRIPTION));
-                List<String> bindingPermissions = loadScopePermissions(omElement);
-                ScopeBinding scopeBinding = new ScopeBinding(PERMISSIONS_BINDING_TYPE, bindingPermissions);
-                ArrayList<ScopeBinding> scopeBindings = new ArrayList<>();
-                scopeBindings.add(scopeBinding);
-                Scope scope = new Scope(scopeName, displayName, scopeBindings, description);
-                scopes.add(scope);
-            }
-        } catch (XMLStreamException e) {
-            log.warn("Error while loading scope config.", e);
-        } catch (FileNotFoundException e) {
-            log.warn("Error while loading email config.", e);
-        } finally {
-            try {
-                if (parser != null) {
-                    parser.close();
-                }
-                if (stream != null) {
-                    IdentityIOStreamUtils.closeInputStream(stream);
-                }
-            } catch (XMLStreamException e) {
-                log.error("Error while closing XML stream", e);
-            }
-        }
-        return scopes;
-    }
-
-    private static List<String> loadScopePermissions(OMElement configElement) {
-
-        List<String> permissions = new ArrayList<>();
-        Iterator it = configElement.getChildElements();
-        while (it.hasNext()) {
-            OMElement element = (OMElement) it.next();
-            Iterator permissonsIterator = element.getChildElements();
-            while (permissonsIterator.hasNext()) {
-                OMElement permissionElement = (OMElement) permissonsIterator.next();
-                if (PERMISSION.equals(permissionElement.getLocalName())) {
-                    String permisson = permissionElement.getText();
-                    permissions.add(permisson);
-                }
-            }
-        }
-        return permissions;
-    }
-
     /**
      * Check whether required token binding available in the request.
      *
@@ -4160,7 +4106,7 @@ public class OAuth2Util {
             return false;
         }
 
-        return tokenBinderOptional.get().isValidTokenBinding(request, tokenBinding.getBindingReference());
+        return tokenBinderOptional.get().isValidTokenBinding(request, tokenBinding);
     }
 
     /**
@@ -4416,5 +4362,26 @@ public class OAuth2Util {
         AbstractUserStoreManager userStoreManager
                 = (AbstractUserStoreManager) realmService.getTenantUserRealm(tenantId).getUserStoreManager();
         return userStoreManager.getUserNameFromUserID(userId);
+    }
+
+    /**
+     * Resolve tenant domain from the httpServlet request.
+     *
+     * @param request HttpServlet Request.
+     * @return Tenant Domain.
+     */
+    public static String resolveTenantDomain(HttpServletRequest request) {
+
+        if (!IdentityTenantUtil.isTenantedSessionsEnabled()) {
+            return MultitenantConstants.SUPER_TENANT_DOMAIN_NAME;
+        }
+
+        if (request != null) {
+            String tenantDomainFromReq = request.getParameter(FrameworkConstants.RequestParams.LOGIN_TENANT_DOMAIN);
+            if (StringUtils.isNotBlank(tenantDomainFromReq)) {
+                return tenantDomainFromReq;
+            }
+        }
+        return IdentityTenantUtil.getTenantDomainFromContext();
     }
 }

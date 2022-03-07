@@ -39,9 +39,11 @@ import org.wso2.carbon.identity.oauth.config.OAuthServerConfiguration;
 import org.wso2.carbon.identity.oauth.endpoint.util.ClaimUtil;
 import org.wso2.carbon.identity.oauth2.RequestObjectException;
 import org.wso2.carbon.identity.oauth2.dto.OAuth2TokenValidationResponseDTO;
+import org.wso2.carbon.identity.oauth2.internal.OAuth2ServiceComponentHolder;
 import org.wso2.carbon.identity.oauth2.util.OAuth2Util;
 import org.wso2.carbon.identity.openidconnect.OpenIDConnectClaimFilterImpl;
 import org.wso2.carbon.identity.openidconnect.RequestObjectService;
+import org.wso2.carbon.identity.openidconnect.dao.ScopeClaimMappingDAOImpl;
 import org.wso2.carbon.identity.openidconnect.internal.OpenIDConnectServiceComponentHolder;
 import org.wso2.carbon.identity.openidconnect.model.RequestedClaim;
 import org.wso2.carbon.registry.core.service.RegistryService;
@@ -85,6 +87,7 @@ public class UserInfoJSONResponseBuilderTest extends UserInfoResponseBaseTest {
     @BeforeClass
     public void setUpTest() throws Exception {
 
+        OAuth2ServiceComponentHolder.getInstance().setScopeClaimMappingDAO(new ScopeClaimMappingDAOImpl());
         userInfoJSONResponseBuilder = new UserInfoJSONResponseBuilder();
         TestUtils.initiateH2Base();
         con = TestUtils.getConnection();
@@ -146,6 +149,7 @@ public class UserInfoJSONResponseBuilderTest extends UserInfoResponseBaseTest {
             authenticatedUser.setTenantDomain(TENANT_DOT_COM);
             authenticatedUser.setUserStoreDomain(JDBC_DOMAIN);
             authenticatedUser.setUserId(AUTHORIZED_USER_ID);
+            authenticatedUser.setAuthenticatedSubjectIdentifier(AUTHORIZED_USER_ID);
             mockAccessTokenDOInOAuth2Util(authenticatedUser);
 
             String responseString =
@@ -199,6 +203,7 @@ public class UserInfoJSONResponseBuilderTest extends UserInfoResponseBaseTest {
         authenticatedUser.setTenantDomain(TENANT_DOT_COM);
         authenticatedUser.setUserStoreDomain(JDBC_DOMAIN);
         authenticatedUser.setUserId(AUTHORIZED_USER_ID);
+        authenticatedUser.setAuthenticatedSubjectIdentifier(AUTHORIZED_USER_ID);
         mockAccessTokenDOInOAuth2Util(authenticatedUser);
 
         String responseString =
@@ -258,6 +263,7 @@ public class UserInfoJSONResponseBuilderTest extends UserInfoResponseBaseTest {
         authenticatedUser.setTenantDomain(TENANT_DOT_COM);
         authenticatedUser.setUserStoreDomain(JDBC_DOMAIN);
         authenticatedUser.setUserId(AUTHORIZED_USER_ID);
+        authenticatedUser.setAuthenticatedSubjectIdentifier(AUTHORIZED_USER_ID);
         mockAccessTokenDOInOAuth2Util(authenticatedUser);
 
         String responseString =
@@ -284,6 +290,7 @@ public class UserInfoJSONResponseBuilderTest extends UserInfoResponseBaseTest {
         authenticatedUser.setTenantDomain(TENANT_DOT_COM);
         authenticatedUser.setUserStoreDomain(JDBC_DOMAIN);
         authenticatedUser.setUserId(AUTHORIZED_USER_ID);
+        authenticatedUser.setAuthenticatedSubjectIdentifier(AUTHORIZED_USER_ID);
         mockAccessTokenDOInOAuth2Util(authenticatedUser);
 
         String responseString =
@@ -303,14 +310,15 @@ public class UserInfoJSONResponseBuilderTest extends UserInfoResponseBaseTest {
 
     @Test(dataProvider = "subjectClaimDataProvider")
     public void testSubjectClaim(Map<String, Object> inputClaims,
-                                 Object authorizedUsername,
+                                 Object authorizedUser,
                                  boolean appendTenantDomain,
                                  boolean appendUserStoreDomain,
                                  String expectedSubjectValue) throws Exception {
 
         try {
-            AuthenticatedUser authzUser = (AuthenticatedUser) authorizedUsername;
+            AuthenticatedUser authzUser = (AuthenticatedUser) authorizedUser;
             prepareForSubjectClaimTest(authzUser, inputClaims, appendTenantDomain, appendUserStoreDomain);
+            updateAuthenticatedSubjectIdentifier(authzUser, appendTenantDomain, appendUserStoreDomain, inputClaims);
 
             when(userInfoJSONResponseBuilder.retrieveUserClaims(any(OAuth2TokenValidationResponseDTO.class)))
                     .thenReturn(inputClaims);

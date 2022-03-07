@@ -36,8 +36,10 @@ import org.wso2.carbon.identity.core.persistence.JDBCPersistenceManager;
 import org.wso2.carbon.identity.oauth.cache.AuthorizationGrantCache;
 import org.wso2.carbon.identity.oauth.config.OAuthServerConfiguration;
 import org.wso2.carbon.identity.oauth2.dto.OAuth2TokenValidationResponseDTO;
+import org.wso2.carbon.identity.oauth2.internal.OAuth2ServiceComponentHolder;
 import org.wso2.carbon.identity.openidconnect.OpenIDConnectClaimFilterImpl;
 import org.wso2.carbon.identity.openidconnect.RequestObjectService;
+import org.wso2.carbon.identity.openidconnect.dao.ScopeClaimMappingDAOImpl;
 import org.wso2.carbon.identity.openidconnect.internal.OpenIDConnectServiceComponentHolder;
 import org.wso2.carbon.identity.openidconnect.model.RequestedClaim;
 
@@ -74,6 +76,7 @@ public class UserInfoJWTResponseTest extends UserInfoResponseBaseTest {
     @BeforeClass
     public void setup() throws Exception {
 
+        OAuth2ServiceComponentHolder.getInstance().setScopeClaimMappingDAO(new ScopeClaimMappingDAOImpl());
         TestUtils.initiateH2Base();
         con = TestUtils.getConnection();
         userInfoJWTResponse = new UserInfoJWTResponse();
@@ -105,6 +108,8 @@ public class UserInfoJWTResponseTest extends UserInfoResponseBaseTest {
         try {
             AuthenticatedUser authenticatedUser = (AuthenticatedUser) authorizedUser;
             prepareForSubjectClaimTest(authenticatedUser, inputClaims, appendTenantDomain, appendUserStoreDomain);
+            updateAuthenticatedSubjectIdentifier(authenticatedUser, appendTenantDomain, appendUserStoreDomain,
+                    inputClaims);
 
             mockObjectsRelatedToTokenValidation();
 
@@ -178,6 +183,7 @@ public class UserInfoJWTResponseTest extends UserInfoResponseBaseTest {
         authenticatedUser.setTenantDomain(TENANT_DOT_COM);
         authenticatedUser.setUserStoreDomain(JDBC_DOMAIN);
         authenticatedUser.setUserId(AUTHORIZED_USER_ID);
+        authenticatedUser.setAuthenticatedSubjectIdentifier(AUTHORIZED_USER_ID);
         mockAccessTokenDOInOAuth2Util(authenticatedUser);
         String responseString =
                 userInfoJWTResponse.getResponseString(getTokenResponseDTO(AUTHORIZED_USER_FULL_QUALIFIED));
@@ -207,6 +213,7 @@ public class UserInfoJWTResponseTest extends UserInfoResponseBaseTest {
         authenticatedUser.setTenantDomain(TENANT_DOT_COM);
         authenticatedUser.setUserStoreDomain(JDBC_DOMAIN);
         authenticatedUser.setUserId(AUTHORIZED_USER_ID);
+        authenticatedUser.setAuthenticatedSubjectIdentifier(AUTHORIZED_USER_ID);
         mockAccessTokenDOInOAuth2Util(authenticatedUser);
 
         String responseString =
@@ -248,6 +255,7 @@ public class UserInfoJWTResponseTest extends UserInfoResponseBaseTest {
             authenticatedUser.setTenantDomain(TENANT_DOT_COM);
             authenticatedUser.setUserStoreDomain(JDBC_DOMAIN);
             authenticatedUser.setUserId(AUTHORIZED_USER_ID);
+            authenticatedUser.setAuthenticatedSubjectIdentifier(AUTHORIZED_USER_ID);
             mockAccessTokenDOInOAuth2Util(authenticatedUser);
             String responseString =
                     userInfoJWTResponse.getResponseString(

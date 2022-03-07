@@ -49,6 +49,7 @@ import org.wso2.carbon.identity.oauth.common.OAuthConstants;
 import org.wso2.carbon.identity.oauth.common.exception.InvalidOAuthClientException;
 import org.wso2.carbon.identity.oauth.config.OAuthServerConfiguration;
 import org.wso2.carbon.identity.oauth.dao.OAuthAppDO;
+import org.wso2.carbon.identity.oauth2.IdentityOAuth2ClientException;
 import org.wso2.carbon.identity.oauth2.IdentityOAuth2Exception;
 import org.wso2.carbon.identity.oauth2.token.bindings.TokenBinder;
 import org.wso2.carbon.identity.oauth2.util.OAuth2Util;
@@ -152,14 +153,14 @@ public class OIDCLogoutServlet extends HttpServlet {
         }
 
         if (!OIDCSessionManagementUtil.getSessionManager().sessionExists(opBrowserState,
-                resolveTenantDomain(request))) {
+                OAuth2Util.resolveTenantDomain(request))) {
             String msg = "No valid session found for the received session state.";
             if (log.isDebugEnabled()) {
                 log.debug(msg);
             }
+            OIDCSessionManagementUtil.removeOPBrowserStateCookie(request, response);
             if (OIDCSessionManagementUtil.handleAlreadyLoggedOutSessionsGracefully()) {
                 handleMissingSessionStateGracefully(request, response);
-                return;
             } else {
                 if (log.isDebugEnabled()) {
                     msg = "HandleAlreadyLoggedOutSessionsGracefully configuration enabled. No valid session found is " +
@@ -168,8 +169,8 @@ public class OIDCLogoutServlet extends HttpServlet {
                 }
                 redirectURL = getErrorPageURL(OAuth2ErrorCodes.ACCESS_DENIED, msg);
                 response.sendRedirect(getRedirectURL(redirectURL, request));
-                return;
             }
+            return;
         }
 
         String consent = request.getParameter(OIDCSessionConstants.OIDC_LOGOUT_CONSENT_PARAM);
@@ -183,8 +184,9 @@ public class OIDCLogoutServlet extends HttpServlet {
                 // User denied logout.
                 redirectURL = getErrorPageURL(OAuth2ErrorCodes.ACCESS_DENIED, "End User denied the logout request");
                 // If postlogoutUri is available then set it as redirectUrl
-                redirectURL = generatePostLogoutRedirectUrl(redirectURL, opBrowserState);
-
+                redirectURL = generatePostLogoutRedirectUrl(redirectURL, opBrowserState, request);
+                response.sendRedirect(redirectURL);
+                return;
             }
         } else {
             // OIDC Logout response
@@ -199,14 +201,23 @@ public class OIDCLogoutServlet extends HttpServlet {
             try {
                 skipConsent = getOpenIDConnectSkipUserConsent(request);
             } catch (ParseException e) {
-                log.error("Error while getting clientId from the IdTokenHint.", e);
-                redirectURL = getErrorPageURL(OAuth2ErrorCodes.ACCESS_DENIED, "ID token signature validation failed.");
+                if (log.isDebugEnabled()) {
+                    log.debug("Error while getting clientId from the IdTokenHint.", e);
+                }
+                redirectURL = getErrorPageURL(OAuth2ErrorCodes.ACCESS_DENIED,
+                        "ID token signature validation failed.");
                 response.sendRedirect(getRedirectURL(redirectURL, request));
                 return;
-            } catch (IdentityOAuth2Exception e) {
-                log.error("Error while getting service provider from the clientId.", e);
-                redirectURL = getErrorPageURL(OAuth2ErrorCodes.ACCESS_DENIED, "ID token signature validation failed.");
+            } catch (IdentityOAuth2ClientException e) {
+                if (log.isDebugEnabled()) {
+                    log.debug("Error while getting service provider from the clientId.", e);
+                }
+                redirectURL = getErrorPageURL(OAuth2ErrorCodes.ACCESS_DENIED,
+                        "ID token signature validation failed.");
                 response.sendRedirect(getRedirectURL(redirectURL, request));
+                return;
+            }  catch (IdentityOAuth2Exception e) {
+                log.error("Error occurred while getting oauth application information.", e);
                 return;
             }
             if (skipConsent) {
@@ -236,7 +247,6 @@ public class OIDCLogoutServlet extends HttpServlet {
                 return;
             }
         }
-        response.sendRedirect(getRedirectURL(redirectURL, request));
     }
 
     private String getOPBrowserState(HttpServletRequest request) {
@@ -274,11 +284,12 @@ public class OIDCLogoutServlet extends HttpServlet {
      *
      * @param redirectURL               Redirect URL.
      * @param opBrowserStateCookieValue OP browser state cookie value.
-     * @return
+     * @param request                   HttpServletRequest.
+     * @return If postLogoutRedirectUri is sent in Logout request parameter then return it as redirect URL.
      * @throws UnsupportedEncodingException
      */
-    private String generatePostLogoutRedirectUrl(String redirectURL, String opBrowserStateCookieValue)
-            throws UnsupportedEncodingException {
+    private String generatePostLogoutRedirectUrl(String redirectURL, String opBrowserStateCookieValue,
+                                                 HttpServletRequest request) throws UnsupportedEncodingException {
 
         // Set postLogoutRedirectUri as redirectURL.
         boolean postLogoutRedirectUriRedirectIsEnabled =
@@ -296,7 +307,7 @@ public class OIDCLogoutServlet extends HttpServlet {
                         cacheEntry.getPostLogoutRedirectUri(), params);
             }
         }
-        return redirectURL;
+        return buildRedirectURLAfterLogout(redirectURL, request);
     }
 
     /**
@@ -329,7 +340,9 @@ public class OIDCLogoutServlet extends HttpServlet {
             } else {
                 if (!validateIdToken(idTokenHint)) {
                     String msg = "ID token signature validation failed.";
-                    log.error(msg);
+                    if (log.isDebugEnabled()) {
+                        log.debug(msg);
+                    }
                     redirectURL = getErrorPageURL(OAuth2ErrorCodes.ACCESS_DENIED, msg);
                     return redirectURL;
                 }
@@ -407,7 +420,9 @@ public class OIDCLogoutServlet extends HttpServlet {
 
             return signedJWT.verify(verifier);
         } catch (JOSEException | ParseException e) {
-            log.error("Error occurred while validating id token signature.");
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while validating id token signature for the id token: " + idToken);
+            }
             return false;
         } catch (Exception e) {
             log.error("Error occurred while validating id token signature.");
@@ -447,10 +462,18 @@ public class OIDCLogoutServlet extends HttpServlet {
                 tenantDomain = extractTenantDomainFromIdToken(idToken);
             }
         } catch (ParseException e) {
-            log.error("Error occurred while extracting client id from id token", e);
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while extracting client id from id token: " + idToken, e);
+            }
             return null;
-        } catch (IdentityOAuth2Exception | InvalidOAuthClientException e) {
+        } catch (IdentityOAuth2Exception e) {
             log.error("Error occurred while getting oauth application information.", e);
+            return null;
+        } catch (InvalidOAuthClientException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Error occurred while getting tenant domain for signature validation with id token: "
+                        + idToken, e);
+            }
             return null;
         }
         return tenantDomain;
@@ -681,7 +704,7 @@ public class OIDCLogoutServlet extends HttpServlet {
         String sessionDataKey = request.getParameter(FrameworkConstants.SESSION_DATA_KEY);
         OIDCSessionDataCacheEntry cacheEntry = getSessionDataFromCache(sessionDataKey);
         String obpsCookieValue = getOPBrowserState(request);
-        String tenantDomain = resolveTenantDomain(request);
+        String tenantDomain = OAuth2Util.resolveTenantDomain(request);
 
         if (cacheEntry != null) {
             if (log.isDebugEnabled()) {
@@ -722,7 +745,7 @@ public class OIDCLogoutServlet extends HttpServlet {
             // Clear binding elements from the response.
             clearTokenBindingElements(cacheEntry.getParamMap().get(OIDCSessionConstants.OIDC_CACHE_CLIENT_ID_PARAM),
                     request, response);
-            response.sendRedirect(getRedirectURL(redirectURL, request));
+            response.sendRedirect(buildRedirectURLAfterLogout(redirectURL, request));
         } else {
             response.sendRedirect(
                     getRedirectURL(getErrorPageURL(OAuth2ErrorCodes.SERVER_ERROR, "User logout failed"), request));
@@ -856,6 +879,7 @@ public class OIDCLogoutServlet extends HttpServlet {
      * Sends logout token to registered back-channel logout uris.
      *
      * @param opbsCookieValue OP browser state cookie value.
+     * @param tenantDomain    Tenant Domain.
      */
     private void doBackChannelLogout(String opbsCookieValue, String tenantDomain) {
 
@@ -953,11 +977,23 @@ public class OIDCLogoutServlet extends HttpServlet {
 
     private void clearTokenBindingElements(String clientId, HttpServletRequest request, HttpServletResponse response) {
 
+        if (StringUtils.isBlank(clientId)) {
+            log.debug("Logout request received without a client id. "
+                    + "So skipping the clearing token binding element.");
+            return;
+        }
+
         OAuthAppDO oAuthAppDO;
         try {
             oAuthAppDO = OAuth2Util.getAppInformationByClientId(clientId);
-        } catch (IdentityOAuth2Exception | InvalidOAuthClientException e) {
+        } catch (IdentityOAuth2Exception e) {
             log.error("Failed to load the app information for the client id: " + clientId, e);
+            return;
+        } catch (InvalidOAuthClientException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("The application with client id: " + clientId
+                        + " does not exists. This application may be deleted after this session is created.", e);
+            }
             return;
         }
 
@@ -974,15 +1010,11 @@ public class OIDCLogoutServlet extends HttpServlet {
                 .ifPresent(t -> t.clearTokenBindingElements(request, response));
     }
 
-    private String resolveTenantDomain(HttpServletRequest request) {
+    private String buildRedirectURLAfterLogout(String redirectURL, HttpServletRequest request) {
 
-        if (!IdentityTenantUtil.isTenantedSessionsEnabled()) {
-            return MultitenantConstants.SUPER_TENANT_DOMAIN_NAME;
+        if (OIDCSessionManagementUtil.isAllowAdditionalParamsFromPostLogoutRedirectURIEnabled()) {
+            return getRedirectURL(redirectURL, request);
         }
-        String tenantDomain = request.getParameter(FrameworkConstants.RequestParams.LOGIN_TENANT_DOMAIN);
-        if (StringUtils.isBlank(tenantDomain)) {
-            return IdentityTenantUtil.getTenantDomainFromContext();
-        }
-        return tenantDomain;
+        return redirectURL;
     }
 }

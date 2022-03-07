@@ -26,11 +26,13 @@ import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.ClaimMetaData;
 import org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.exception.SSOConsentServiceException;
 import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatedUser;
+import org.wso2.carbon.identity.application.authentication.framework.util.FrameworkUtils;
 import org.wso2.carbon.identity.application.common.model.ServiceProvider;
 import org.wso2.carbon.identity.claim.metadata.mgt.exception.ClaimMetadataException;
 import org.wso2.carbon.identity.claim.metadata.mgt.model.Claim;
 import org.wso2.carbon.identity.claim.metadata.mgt.model.ExternalClaim;
 import org.wso2.carbon.identity.core.util.IdentityTenantUtil;
+import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.oauth.dto.ScopeDTO;
 import org.wso2.carbon.identity.oauth2.IdentityOAuth2Exception;
 import org.wso2.carbon.identity.oauth2.dao.OAuthTokenPersistenceFactory;
@@ -41,6 +43,8 @@ import org.wso2.carbon.identity.openidconnect.model.RequestedClaim;
 import org.wso2.carbon.registry.api.RegistryException;
 import org.wso2.carbon.registry.api.Resource;
 import org.wso2.carbon.registry.core.service.RegistryService;
+import org.wso2.carbon.user.core.UserCoreConstants;
+import org.wso2.carbon.user.core.util.UserCoreUtil;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -58,6 +62,7 @@ import static org.apache.commons.collections.MapUtils.isEmpty;
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OIDCClaims.ADDRESS;
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OIDCClaims.EMAIL_VERIFIED;
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OIDCClaims.PHONE_NUMBER_VERIFIED;
+import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OIDCClaims.ROLES;
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.OIDCClaims.UPDATED_AT;
 import static org.wso2.carbon.identity.oauth.common.OAuthConstants.SCOPE_RESOURCE_PATH;
 
@@ -137,7 +142,7 @@ public class OpenIDConnectClaimFilterImpl implements OpenIDConnectClaimFilter {
         if (isNotEmpty(addressScopeClaims)) {
             handleAddressClaim(claimsToBeReturned, addressScopeClaims);
         }
-
+        handleRolesClaim(claimsToBeReturned);
         handleUpdateAtClaim(claimsToBeReturned);
         handlePhoneNumberVerifiedClaim(claimsToBeReturned);
         handleEmailVerifiedClaim(claimsToBeReturned);
@@ -425,7 +430,8 @@ public class OpenIDConnectClaimFilterImpl implements OpenIDConnectClaimFilter {
             } else {
                 timeInMillis = Long.parseLong((String) (returnClaims.get(UPDATED_AT)));
             }
-            returnClaims.put(UPDATED_AT, timeInMillis);
+            long timeInSeconds = timeInMillis / 1000;
+            returnClaims.put(UPDATED_AT, timeInSeconds);
         }
     }
 
@@ -447,6 +453,23 @@ public class OpenIDConnectClaimFilterImpl implements OpenIDConnectClaimFilter {
             if (returnClaims.get(EMAIL_VERIFIED) instanceof String) {
                 returnClaims.put(EMAIL_VERIFIED, (Boolean.valueOf((String) (returnClaims.get(EMAIL_VERIFIED)))));
             }
+        }
+    }
+
+    private void handleRolesClaim(Map<String, Object> returnClaims) {
+
+        if (returnClaims.containsKey(ROLES) && IdentityUtil.isGroupsVsRolesSeparationImprovementsEnabled()
+                && returnClaims.get(ROLES) instanceof String) {
+            String multiAttributeSeparator = FrameworkUtils.getMultiAttributeSeparator();
+            List<String> roles = Arrays.asList(returnClaims.get(ROLES).toString().split(multiAttributeSeparator));
+
+            for (String role : roles) {
+                if (UserCoreConstants.INTERNAL_DOMAIN.equalsIgnoreCase(IdentityUtil.extractDomainFromName(role))) {
+                   String domainRemovedRole = UserCoreUtil.removeDomainFromName(role);
+                   roles.set(roles.indexOf(role), domainRemovedRole);
+                }
+            }
+            returnClaims.put(ROLES, StringUtils.join(roles, multiAttributeSeparator));
         }
     }
 
@@ -503,7 +526,6 @@ public class OpenIDConnectClaimFilterImpl implements OpenIDConnectClaimFilter {
         } catch (ClaimMetadataException e) {
             String msg = "Error while trying to convert user consented claims to OIDC dialect in tenantDomain: "
                     + tenantDomain;
-            log.error(msg);
             if (log.isDebugEnabled()) {
                 log.debug(msg, e);
             }

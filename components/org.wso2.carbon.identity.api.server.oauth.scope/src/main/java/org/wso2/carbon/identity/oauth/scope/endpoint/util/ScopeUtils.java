@@ -17,6 +17,7 @@
 package org.wso2.carbon.identity.oauth.scope.endpoint.util;
 
 import org.apache.commons.logging.Log;
+import org.apache.logging.log4j.ThreadContext;
 import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.identity.oauth.scope.endpoint.dto.ErrorDTO;
 import org.wso2.carbon.identity.oauth.scope.endpoint.dto.ScopeBindingDTO;
@@ -50,7 +51,7 @@ public class ScopeUtils {
     }
 
     /**
-     * Logs the error, builds a ScopeEndpointException with specified details and throws it
+     * Logs the error, builds a ScopeEndpointException with specified details and throws it.
      *
      * @param status    response status
      * @param message   error message
@@ -92,10 +93,32 @@ public class ScopeUtils {
     }
 
     /**
-     * Returns a generic errorDTO
+     * Check whether correlation id present in the log MDC.
      *
-     * @param message specifies the error message
-     * @return A generic errorDTO with the specified details
+     * @return whether the correlation id is present
+     */
+    public static boolean isCorrelationIDPresent() {
+        return ThreadContext.get(Oauth2ScopeConstants.CORRELATION_ID_MDC) != null;
+    }
+
+    /**
+     * Get correlation id of current thread.
+     *
+     * @return correlation-id
+     */
+    public static String getCorrelation() {
+        String ref = null;
+        if (isCorrelationIDPresent()) {
+            ref = ThreadContext.get(Oauth2ScopeConstants.CORRELATION_ID_MDC).toString();
+        }
+        return ref;
+    }
+
+    /**
+     * Returns a generic errorDTO.
+     *
+     * @param message specifies the error message.
+     * @return A generic errorDTO with the specified details.
      */
     public static ErrorDTO getErrorDTO(String message, String code, String description) {
 
@@ -103,6 +126,8 @@ public class ScopeUtils {
         errorDTO.setCode(code);
         errorDTO.setMessage(message);
         errorDTO.setDescription(description);
+        errorDTO.setRef(getCorrelation());
+
         return errorDTO;
     }
 

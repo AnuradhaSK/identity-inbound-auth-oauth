@@ -45,6 +45,7 @@ import org.wso2.carbon.identity.application.common.model.Property;
 import org.wso2.carbon.identity.application.common.model.ServiceProvider;
 import org.wso2.carbon.identity.application.common.util.IdentityApplicationManagementUtil;
 import org.wso2.carbon.identity.application.mgt.ApplicationManagementService;
+import org.wso2.carbon.identity.central.log.mgt.utils.LoggerUtils;
 import org.wso2.carbon.identity.common.testng.WithCarbonHome;
 import org.wso2.carbon.identity.core.internal.IdentityCoreServiceComponent;
 import org.wso2.carbon.identity.core.util.IdentityConfigParser;
@@ -120,7 +121,7 @@ import static org.wso2.carbon.identity.oauth2.util.OAuth2Util.getIdTokenIssuer;
         OAuth2Util.class, OAuthComponentServiceHolder.class, AppInfoCache.class, IdentityConfigParser.class,
         PrivilegedCarbonContext.class, IdentityTenantUtil.class, CarbonUtils.class,
         IdentityCoreServiceComponent.class, NetworkUtils.class, IdentityApplicationManagementUtil.class,
-        IdentityProviderManager.class, FederatedAuthenticatorConfig.class, FrameworkUtils.class})
+        IdentityProviderManager.class, FederatedAuthenticatorConfig.class, FrameworkUtils.class, LoggerUtils.class})
 public class OAuth2UtilTest extends PowerMockIdentityBaseTest {
 
     private String[] scopeArraySorted = new String[]{"scope1", "scope2", "scope3"};
@@ -233,6 +234,9 @@ public class OAuth2UtilTest extends PowerMockIdentityBaseTest {
         } catch (SocketException e) {
             // Mock behaviour, hence ignored
         }
+        mockStatic(LoggerUtils.class);
+        when(LoggerUtils.isDiagnosticLogsEnabled()).thenReturn(true);
+        when(IdentityTenantUtil.getTenantId(anyString())).thenReturn(-1234);
     }
 
     @AfterMethod
@@ -439,7 +443,6 @@ public class OAuth2UtilTest extends PowerMockIdentityBaseTest {
     public void testIsHashEnabled() {
 
         when(OAuthServerConfiguration.getInstance().isClientSecretHashEnabled()).thenReturn(true);
-
         assertTrue(OAuth2Util.isHashEnabled());
     }
 
@@ -1594,7 +1597,6 @@ public class OAuth2UtilTest extends PowerMockIdentityBaseTest {
                 {"dummyReferenceCodeChallenge", verificationCode, OAuthConstants.OAUTH_PKCE_S256_CHALLENGE, false},
                 {verificationCode, verificationCode, null, true},
                 {"", null, OAuthConstants.OAUTH_PKCE_S256_CHALLENGE, true},
-
         };
     }
 
@@ -1968,7 +1970,7 @@ public class OAuth2UtilTest extends PowerMockIdentityBaseTest {
     }
 
     @Test(dataProvider = "createResponseType")
-    public void testisHybridResponseType(String responseType, boolean expected) {
+    public void testIsHybridResponseType(String responseType, boolean expected) {
 
         assertEquals(OAuth2Util.isHybridResponseType(responseType), expected);
     }
@@ -2169,7 +2171,6 @@ public class OAuth2UtilTest extends PowerMockIdentityBaseTest {
         } else {
             WhiteboxImpl.setInternalState(OAuthTokenPersistenceFactory.getInstance(), "tokenDAO", accessTokenDAO);
             when(accessTokenDAO.getAccessToken(anyString(), anyBoolean())).thenReturn(accessTokenDO);
-
         }
         when(oauthServerConfigurationMock.isClientSecretHashEnabled()).thenReturn(false);
         return accessTokenDO;

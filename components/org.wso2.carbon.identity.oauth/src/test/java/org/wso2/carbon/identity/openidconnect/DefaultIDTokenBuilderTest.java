@@ -66,6 +66,7 @@ import org.wso2.carbon.identity.oauth2.test.utils.CommonTestUtils;
 import org.wso2.carbon.identity.oauth2.token.OAuthTokenReqMessageContext;
 import org.wso2.carbon.identity.oauth2.token.handlers.grant.saml.SAML2BearerGrantHandlerTest;
 import org.wso2.carbon.identity.oauth2.util.OAuth2Util;
+import org.wso2.carbon.identity.openidconnect.dao.ScopeClaimMappingDAOImpl;
 import org.wso2.carbon.identity.openidconnect.internal.OpenIDConnectServiceComponentHolder;
 import org.wso2.carbon.identity.openidconnect.model.RequestedClaim;
 import org.wso2.carbon.identity.testutil.ReadCertStoreSampleUtil;
@@ -112,6 +113,11 @@ public class DefaultIDTokenBuilderTest extends PowerMockTestCase {
     private OAuthTokenReqMessageContext messageContext;
     private OAuth2AccessTokenRespDTO tokenRespDTO;
     private AuthenticatedUser user;
+
+    public DefaultIDTokenBuilderTest() {
+
+        OAuth2ServiceComponentHolder.getInstance().setScopeClaimMappingDAO(new ScopeClaimMappingDAOImpl());
+    }
 
     @BeforeClass
     public void setUp() throws Exception {
@@ -234,7 +240,8 @@ public class DefaultIDTokenBuilderTest extends PowerMockTestCase {
         List claimProviders = new ArrayList();
         claimProviders.add(claimProvider);
         WhiteboxImpl.setInternalState(OpenIDConnectServiceComponentHolder.getInstance(),
-                "claimProviders", claimProviders);    }
+                "claimProviders", claimProviders);
+    }
 
     @Test
     public void testBuildIDToken() throws Exception {
@@ -252,7 +259,7 @@ public class DefaultIDTokenBuilderTest extends PowerMockTestCase {
                 clientId);
         Assert.assertEquals(claims.getIssuer(),
                 "https://localhost:9443/oauth2/token");
-        Assert.assertEquals(claims.getSubject(), "user@carbon.super");
+        Assert.assertEquals(claims.getSubject(), "user1");
         Assert.assertEquals(claims.getClaim("isk"), "idp");
         Assert.assertEquals(claims.getClaim("email"), "email");
         Assert.assertEquals(claims.getClaim("username"), "username");
@@ -278,7 +285,7 @@ public class DefaultIDTokenBuilderTest extends PowerMockTestCase {
         Assert.assertEquals(claims.getAudience().get(0),
                 clientId);
         Assert.assertEquals(claims.getIssuer(), "https://localhost:9443/oauth2/token");
-        Assert.assertEquals(claims.getSubject(), "user@carbon.super");
+        Assert.assertEquals(claims.getSubject(), "user1");
         Assert.assertEquals(claims.getClaim("isk"), "wso2.is.com");
         Long expirationTime = ((Date) claims.getClaim("exp")).getTime();
         Assert.assertTrue(expirationTime > (new Date()).getTime());
@@ -306,7 +313,7 @@ public class DefaultIDTokenBuilderTest extends PowerMockTestCase {
         JWTClaimsSet claims = encryptedJWT.getPayload().toSignedJWT().getJWTClaimsSet();
         Assert.assertEquals(claims.getAudience().get(0), CLIENT_ID);
         Assert.assertEquals(claims.getIssuer(), "https://localhost:9443/oauth2/token");
-        Assert.assertEquals(claims.getSubject(), "user1@carbon.super");
+        Assert.assertEquals(claims.getSubject(), "user1");
         Assert.assertEquals(claims.getClaim("acr"),  "acr");
         Assert.assertEquals(claims.getClaim("isk"), "idp");
         Assert.assertEquals(claims.getClaim("nonce"), "nonce");
@@ -334,7 +341,7 @@ public class DefaultIDTokenBuilderTest extends PowerMockTestCase {
         JWTClaimsSet claims = encryptedJWT.getPayload().toSignedJWT().getJWTClaimsSet();
         Assert.assertEquals(claims.getAudience().get(0), CLIENT_ID);
         Assert.assertEquals(claims.getIssuer(), "https://localhost:9443/oauth2/token");
-        Assert.assertEquals(claims.getSubject(),  "user1@carbon.super");
+        Assert.assertEquals(claims.getSubject(),  "user1");
         Assert.assertEquals(claims.getClaim("isk"), "wso2.is.com");
         Long expirationTime = ((Date) claims.getClaim("exp")).getTime();
         Assert.assertTrue(expirationTime < (new Date()).getTime());

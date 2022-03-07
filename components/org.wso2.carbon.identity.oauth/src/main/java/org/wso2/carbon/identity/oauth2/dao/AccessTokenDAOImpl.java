@@ -298,6 +298,29 @@ public class AccessTokenDAOImpl extends AbstractOAuthDAO implements AccessTokenD
                 throw new IdentityOAuth2Exception(
                         "Error when storing the access token for consumer key : " + consumerKey, e);
             }
+        } catch (Exception e) {
+            IdentityDatabaseUtil.rollbackTransaction(connection);
+            // Handle constrain violation issue in JDBC drivers which does not throw
+            // SQLIntegrityConstraintViolationException or SQLException.
+            if (StringUtils.containsIgnoreCase(e.getMessage(), "CON_APP_KEY") || (e.getCause() != null &&
+                    StringUtils.containsIgnoreCase(e.getCause().getMessage(), "CON_APP_KEY"))
+                    || (e.getCause() != null && e.getCause().getCause() != null &&
+                    StringUtils.containsIgnoreCase(e.getCause().getCause().getMessage(), "CON_APP_KEY"))) {
+                if (retryAttemptCounter >= getTokenPersistRetryCount()) {
+                    log.error("'CON_APP_KEY' constrain violation retry count exceeds above the maximum count - " +
+                            getTokenPersistRetryCount());
+                    String errorMsg = "Access Token for consumer key : " + consumerKey + ", user : " +
+                            accessTokenDO.getAuthzUser() + " and scope : " +
+                            OAuth2Util.buildScopeString(accessTokenDO.getScope()) + "already exists";
+                    throw new IdentityOAuth2Exception(errorMsg, e);
+                }
+
+                recoverFromConAppKeyConstraintViolation(accessToken, consumerKey, accessTokenDO,
+                        connection, userStoreDomain, retryAttemptCounter + 1);
+            } else {
+                throw new IdentityOAuth2Exception(
+                        "Error when storing the access token for consumer key : " + consumerKey, e);
+            }
         } finally {
             IdentityDatabaseUtil.closeStatement(addScopePrepStmt);
             IdentityDatabaseUtil.closeStatement(insertTokenPrepStmt);
@@ -2723,7 +2746,7 @@ public class AccessTokenDAOImpl extends AbstractOAuthDAO implements AccessTokenD
                             String[] previousScope = tokenObj.getScope();
                             String[] newScope = new String[tokenObj.getScope().length + 1];
                             System.arraycopy(previousScope, 0, newScope, 0, previousScope.length);
-                            newScope[previousScope.length] = resultSet.getString(2);
+                            newScope[previousScope.length] = resultSet.getString("TOKEN_SCOPE");
                             tokenObj.setScope(newScope);
                         } else {
                             String consumerKey = resultSet.getString("CONSUMER_KEY");
@@ -2733,9 +2756,9 @@ public class AccessTokenDAOImpl extends AbstractOAuthDAO implements AccessTokenD
                             int tenantId = resultSet.getInt("TENANT_ID");
                             String authzUser = resultSet.getString("AUTHZ_USER");
                             String userDomain = resultSet.getString("USER_DOMAIN");
-                            String authenticatedIDP = resultSet.getString("IDP_ID");
+                            String authenticatedIDPName = resultSet.getString("NAME");
                             AuthenticatedUser user = OAuth2Util.createAuthenticatedUser(authzUser,
-                                    userDomain, OAuth2Util.getTenantDomain(tenantId), authenticatedIDP);
+                                    userDomain, OAuth2Util.getTenantDomain(tenantId), authenticatedIDPName);
                             Timestamp issuedTime = resultSet
                                     .getTimestamp("TIME_CREATED", Calendar.getInstance(TimeZone.getTimeZone(UTC)));
                             Timestamp refreshTokenIssuedTime =
